@@ -1,0 +1,7 @@
+interface:
+  display_name: "X to 3D"
+  short_description: "Convert local images and videos into 3D outputs"
+  default_prompt: "Use $x-to-3d to convert a local image or video into a 3D output."
+
+policy:
+  allow_implicit_invocation: true
