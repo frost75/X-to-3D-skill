@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import mimetypes
 import os
@@ -27,6 +28,7 @@ VIDEO_OUTPUTS = {"mp4", "mkv", "avi"}
 TERMINAL_STATUSES = {"done", "failed", "cancelled", "expired"}
 DEFAULT_POLL_SECONDS = 5.0
 DEFAULT_TIMEOUT_SECONDS = 6 * 60 * 60
+DEFAULT_API_BASE_URL = "https://ntpmkvxomxmsdamwzccl.supabase.co/functions/v1/x-to-3d-api"
 
 
 class ClientError(Exception):
@@ -55,12 +57,7 @@ def session_path() -> Path:
 
 
 def api_base_url() -> str:
-    value = os.environ.get("X_TO_3D_API_BASE_URL", "").strip().rstrip("/")
-    if not value:
-        raise ClientError(
-            "CONFIG_REQUIRED",
-            "X_TO_3D_API_BASE_URL is not configured. Ask the service operator for the public API URL.",
-        )
+    value = os.environ.get("X_TO_3D_API_BASE_URL", DEFAULT_API_BASE_URL).strip().rstrip("/")
     parsed = urllib.parse.urlparse(value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ClientError("INVALID_CONFIG", "X_TO_3D_API_BASE_URL must be an absolute HTTP(S) URL.")
@@ -141,15 +138,20 @@ def request(
         headers["Authorization"] = f"Bearer {token}"
     if body is not None and content_type:
         headers["Content-Type"] = content_type
-    req = urllib.request.Request(api_base_url() + route, data=body, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            return decode_json(response.read())
-    except urllib.error.HTTPError as exc:
-        payload = decode_json(exc.read())
-        raise api_error(exc.code, payload) from exc
-    except urllib.error.URLError as exc:
-        raise ClientError("SERVICE_UNREACHABLE", "Could not reach the X-to-3D service.") from exc
+    last_error: Optional[BaseException] = None
+    for attempt in range(3):
+        req = urllib.request.Request(api_base_url() + route, data=body, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                return decode_json(response.read())
+        except urllib.error.HTTPError as exc:
+            payload = decode_json(exc.read())
+            raise api_error(exc.code, payload) from exc
+        except (urllib.error.URLError, http.client.RemoteDisconnected, TimeoutError) as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(0.75 * (2 ** attempt))
+    raise ClientError("SERVICE_UNREACHABLE", "Could not reach the X-to-3D service.") from last_error
 
 
 def validate_session_payload(payload: Dict[str, Any], installation_id: str) -> Dict[str, Any]:
@@ -262,27 +264,55 @@ def validate_input(path_text: str, output_format: Optional[str]) -> Tuple[Path, 
     return path, selected
 
 
-def multipart_body(path: Path, output_format: str) -> Tuple[bytes, str]:
-    boundary = f"----x-to-3d-{secrets.token_hex(16)}"
-    mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    chunks = [
-        f"--{boundary}\r\n".encode(),
-        b'Content-Disposition: form-data; name="output_format"\r\n\r\n',
-        output_format.encode(),
-        b"\r\n",
-        f"--{boundary}\r\n".encode(),
-        f'Content-Disposition: form-data; name="file"; filename="{path.name}"\r\n'.encode("utf-8"),
-        f"Content-Type: {mime}\r\n\r\n".encode(),
-        path.read_bytes(),
-        b"\r\n",
-        f"--{boundary}--\r\n".encode(),
-    ]
-    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
+def upload_input(path: Path, output_format: str) -> Dict[str, Any]:
+    content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    size = path.stat().st_size
+    body = json.dumps({
+        "file_name": path.name,
+        "content_type": content_type,
+        "bytes": size,
+    }).encode("utf-8")
+    upload = authenticated_request("POST", "/uploads", body=body)
+    upload_url = upload.get("upload_url")
+    object_key = upload.get("object_key")
+    if not isinstance(upload_url, str) or not upload_url:
+        raise ClientError("INVALID_RESPONSE", "Upload response did not contain an upload URL.")
+    if not isinstance(object_key, str) or not object_key:
+        raise ClientError("INVALID_RESPONSE", "Upload response did not contain an object key.")
+    request_headers = {
+        "Content-Type": content_type,
+        "Content-Length": str(size),
+        "cache-control": "max-age=3600",
+        "x-upsert": "false",
+        "User-Agent": "x-to-3d-skill/0.2.0",
+    }
+    upload_request = urllib.request.Request(
+        upload_url,
+        data=path.read_bytes(),
+        headers=request_headers,
+        method="PUT",
+    )
+    try:
+        with urllib.request.urlopen(upload_request, timeout=300.0) as response:
+            response.read()
+    except urllib.error.HTTPError as exc:
+        exc.read()
+        raise ClientError("UPLOAD_FAILED", f"Supabase Storage rejected the upload with HTTP {exc.code}.") from exc
+    except urllib.error.URLError as exc:
+        raise ClientError("UPLOAD_FAILED", "Could not upload the input to Supabase Storage.") from exc
+    return {
+        "object_key": object_key,
+        "file_name": path.name,
+        "content_type": content_type,
+        "bytes": size,
+        "output_format": output_format,
+    }
 
 
 def create_job(path: Path, output_format: str) -> Dict[str, Any]:
-    body, content_type = multipart_body(path, output_format)
-    payload = authenticated_request("POST", "/jobs", body=body, content_type=content_type, timeout=180.0)
+    upload = upload_input(path, output_format)
+    body = json.dumps(upload).encode("utf-8")
+    payload = authenticated_request("POST", "/jobs", body=body, timeout=180.0)
     if not isinstance(payload.get("job_id"), str):
         raise ClientError("INVALID_RESPONSE", "Job response did not contain a job identifier.")
     return payload

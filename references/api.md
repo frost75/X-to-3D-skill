@@ -1,6 +1,12 @@
 # X-to-3D API Contract
 
-The client reads the versioned API root from `X_TO_3D_API_BASE_URL`. A configured value should resemble `https://service.example/api/v1`, without a trailing slash.
+The production API root is:
+
+```text
+https://ntpmkvxomxmsdamwzccl.supabase.co/functions/v1/x-to-3d-api
+```
+
+`X_TO_3D_API_BASE_URL` may override it for development or self-hosting.
 
 ## Authentication
 
@@ -60,17 +66,43 @@ GET /account
 
 Response fields may include `remaining_bytes` and `active_job`.
 
+## Create Upload
+
+```http
+POST /uploads
+Content-Type: application/json
+```
+
+Request:
+
+```json
+{
+  "file_name": "input.png",
+  "content_type": "image/png",
+  "bytes": 1234
+}
+```
+
+The response contains a short-lived `upload_url` and an `object_key`. Upload the raw file bytes directly to `upload_url` with HTTP `PUT`, `Content-Type`, `cache-control: max-age=3600`, and `x-upsert: false`.
+
 ## Create Job
 
 ```http
 POST /jobs
-Content-Type: multipart/form-data
+Content-Type: application/json
 ```
 
-Parts:
+Request:
 
-- `file`: binary input.
-- `output_format`: requested extension.
+```json
+{
+  "object_key": "user-id/inputs/uuid.png",
+  "file_name": "input.png",
+  "content_type": "image/png",
+  "bytes": 1234,
+  "output_format": "png"
+}
+```
 
 Response:
 

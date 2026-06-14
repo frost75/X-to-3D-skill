@@ -10,8 +10,8 @@ Use the bundled client to submit local media to the hosted X-to-3D service. Keep
 ## Requirements
 
 - Require Python 3.9 or newer.
-- Read the API base URL from `X_TO_3D_API_BASE_URL`.
-- Treat the service as unavailable when that variable is missing. Explain that the service operator must provide its public API URL; do not invent one.
+- Use the hosted API at `https://ntpmkvxomxmsdamwzccl.supabase.co/functions/v1/x-to-3d-api`.
+- Read `X_TO_3D_API_BASE_URL` only as an optional override for development or self-hosting.
 - Use `X_TO_3D_STATE_DIR` only when the user explicitly needs a non-default credential location.
 
 ## Workflow
@@ -28,7 +28,7 @@ Use the bundled client to submit local media to the hosted X-to-3D service. Keep
 python scripts/x_to_3d.py convert "C:\path\input.jpg" --output-format png
 ```
 
-5. Let `convert` initialize the anonymous device session, submit the job, poll it, and download the result.
+5. Let `convert` initialize the anonymous device session, upload directly to private Supabase Storage, submit the job, poll it, and download the result.
 6. Report the final local output path. Do not print credential files, access tokens, refresh tokens, or full signed download URLs.
 
 On macOS or Linux, invoke the same command with `python3` when `python` is unavailable.
